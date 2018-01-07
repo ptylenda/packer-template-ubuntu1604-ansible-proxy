@@ -1,0 +1,98 @@
+---
+- hosts: ubuntu
+  vars:
+    http_proxy: ""
+    https_proxy: ""
+    no_proxy: ""
+    configure_proxy: "{{ True if http_proxy or https_proxy else False }}"
+  environment:
+    HTTP_PROXY: "{{ http_proxy }}"
+    HTTPS_PROXY: "{{ https_proxy }}"
+    NO_PROXY: "{{ no_proxy }}"
+    http_proxy: "{{ http_proxy }}"
+    https_proxy: "{{ https_proxy }}"
+    no_proxy: "{{ no_proxy }}"
+  tasks:
+    - name: Install and configure docker as root
+      become: yes
+      block:
+      - name: Configuring environment proxy
+        lineinfile:
+          dest: /etc/environment
+          line: "{{ item.key }}={{ item.value }}"
+        with_dict:
+          HTTP_PROXY: "{{ http_proxy }}"
+          HTTPS_PROXY: "{{ https_proxy }}"
+          NO_PROXY: "{{ no_proxy }}"
+          http_proxy: "{{ http_proxy }}"
+          https_proxy: "{{ https_proxy }}"
+          no_proxy: "{{ no_proxy }}"
+        when: configure_proxy|bool|default(false)
+      - name: Update all packages to the latest version
+        apt:
+          upgrade: dist
+          update_cache: yes
+      - name: Install required packages
+        apt:
+          name: "{{ item }}"
+          state: present
+          update_cache: no
+        with_items:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - software-properties-common
+      - name: Add Docker repository key
+        apt_key:    
+          id: 9DC858229FC7DD38854AE2D88D81803C0EBFCD88
+          keyserver: hkp://ha.pool.sks-keyservers.net
+          state: present
+      - name: Add Docker repository and update apt cache
+        apt_repository:
+          repo: "deb [arch=amd64] https://download.docker.com/linux/{{ ansible_distribution|lower }} {{ ansible_distribution_release|lower }} stable"
+          mode: 644
+          update_cache: yes
+          state: present
+      - name: Install Docker CE
+        apt:
+          name: docker-ce
+          state: present
+      - name: Add users to the docker group
+        user:
+          name: ubuntu
+          groups: docker
+          append: yes
+      - name: Download docker-compose
+        get_url:
+          url: https://github.com/docker/compose/releases/download/1.14.0/docker-compose-{{ ansible_system }}-{{ ansible_architecture }}
+          dest: /usr/local/bin/docker-compose
+          mode: 0755
+        register: download_docker_compose
+      - name: Get docker-compose version
+        shell: docker-compose version --short
+        register: docker_compose_version
+        when: download_docker_compose.changed
+      - name: Download docker-compose autocomplete
+        get_url:
+          url: https://raw.githubusercontent.com/docker/compose/{{ docker_compose_version.stdout }}/contrib/completion/bash/docker-compose
+          dest: /etc/bash_completion.d/docker-compose
+          mode: 0755
+        when: download_docker_compose.changed
+      - name: Configure proxy for docker
+        block:
+        - name: Ensure systemd directory for docker service exists
+          file: 
+            path: /etc/systemd/system/docker.service.d
+            recurse: yes
+            state: directory
+        - name: Set proxy settings for docker engine
+          template:
+            src: ../templates/http-proxy.conf.j2
+            dest: /etc/systemd/system/docker.service.d/http-proxy.conf
+            owner: root
+            group: root
+            mode: 0644
+          notify:
+            - Reload systemd
+            - Restart docker service
+        when: configure_proxy|bool|default(false)
